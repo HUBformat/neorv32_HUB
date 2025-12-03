@@ -191,8 +191,12 @@ architecture neorv32_cpu_cp_fpu_rtl of neorv32_cpu_cp_fpu is
 
   -- multiplier unit --
   type multiplier_t is record
-    opa       : std_ulogic_vector(23 downto 0); -- mantissa A plus hidden one
-    opb       : std_ulogic_vector(23 downto 0); -- mantissa B plus hidden one
+    -- Implementación del ILSB --
+    -- Modificamos el tamaño de los operandos de 24 bits (1 + 23) a 25 bits (1 + 23 + 1)
+    --opa       : std_ulogic_vector(23 downto 0); -- mantissa A plus hidden one
+    --opb       : std_ulogic_vector(23 downto 0); -- mantissa B plus hidden one
+    opa       : std_ulogic_vector(24 downto 0); -- mantissa A plus hidden one
+    opb       : std_ulogic_vector(24 downto 0); -- mantissa B plus hidden one
     sign      : std_ulogic; -- resulting sign
     product   : std_ulogic_vector(47 downto 0); -- product
     exp_sum   : std_ulogic_vector(8 downto 0);  -- incl 1x overflow/underflow bit
@@ -748,7 +752,9 @@ begin
            fpu_operands.rs2_class(fp_class_pos_denorm_c) or fpu_operands.rs2_class(fp_class_neg_denorm_c)) = '1') then
         multiplier.exp_res <= (others => '0'); -- if the input to the multiplier is +/- zero or +/- denorm the result will always be +/- zero
       else
-        multiplier.exp_res <= std_ulogic_vector(unsigned('0' & multiplier.exp_sum) - 127);
+        -- Aquí cambiamos el exponente a 128, ya que es el usado en el formato HUB --
+        --multiplier.exp_res <= std_ulogic_vector(unsigned('0' & multiplier.exp_sum) - 127);
+        multiplier.exp_res <= std_ulogic_vector(unsigned('0' & multiplier.exp_sum) - 128);
       end if;
 
       -- exponent computation --
@@ -807,7 +813,9 @@ begin
   -- integer multiplier (unsigned only) --
   multiplier_core_inst: entity neorv32.neorv32_prim_mul
   generic map (
-    DWIDTH => 24
+    -- Sumamos un bit más al ancho para incluir el ILSB
+    --DWIDTH => 24
+    DWIDTH => 25
   )
   port map (
     -- global control --
@@ -821,8 +829,11 @@ begin
     opb_sn_i => '0',
     res_o    => multiplier.product
   );
-  multiplier.opa <= '1' & fpu_operands.rs1(22 downto 0); -- append hidden one to mantissa
-  multiplier.opb <= '1' & fpu_operands.rs2(22 downto 0); -- append hidden one to mantissa
+  -- Aquí añadimos el ILSB a los operandos --
+  --multiplier.opa <= '1' & fpu_operands.rs1(22 downto 0); -- append hidden one to mantissa
+  --multiplier.opb <= '1' & fpu_operands.rs2(22 downto 0); -- append hidden one to mantissa
+  multiplier.opa <= '1' & fpu_operands.rs1(22 downto 0) & 1; -- append hidden one to mantissa
+  multiplier.opb <= '1' & fpu_operands.rs2(22 downto 0) & 1; -- append hidden one to mantissa
 
   -- exponent sum --
   multiplier.exp_sum <= std_ulogic_vector(unsigned('0' & fpu_operands.rs1(30 downto 23)) + unsigned('0' & fpu_operands.rs2(30 downto 23)));
@@ -1416,7 +1427,9 @@ begin
       when others => -- op_i2f_c
         normalizer.mode      <= '1'; -- int_to_float
         normalizer.sign      <= fu_conv_i2f.sign;
-        normalizer.xexp      <= "001111111"; -- bias = 127
+        -- Cambiamos el bias a 128
+        --normalizer.xexp      <= "001111111"; -- bias = 127
+        normalizer.xexp      <= "010000000"; -- bias_hub = 128
         normalizer.xmantissa <= (others => '0'); -- don't care
         normalizer.class     <= (others => '0'); -- don't care
         normalizer.flags_in  <= (others => '0'); -- no flags yet
@@ -2087,7 +2100,9 @@ begin
           else
             sreg.int    <= (others => '0');
             sreg.int(0) <= '1'; -- hidden one
-            ctrl.cnt    <= std_ulogic_vector(unsigned(ctrl.cnt) - 127); -- remove bias to get raw number of left shifts
+            -- Cambiamos bias a 128
+            --ctrl.cnt    <= std_ulogic_vector(unsigned(ctrl.cnt) - 127); -- remove bias to get raw number of left shifts
+            ctrl.cnt    <= std_ulogic_vector(unsigned(ctrl.cnt) - 128); -- remove bias to get raw number of left shifts
           end if;
           -- check terminal cases --
           if ((ctrl.class(fp_class_neg_inf_c)  or ctrl.class(fp_class_pos_inf_c) or
@@ -2105,7 +2120,10 @@ begin
             -- Catch: When the exponent is larger than XLEN + 1 set the overflow flag and go to the next stage.
             -- Note: We use 127 as that is an exponent of 0, XLEN for the integer width and + 1 for safety.
             -- In principle the +1 shouldn't be needed.
-            if (unsigned(ctrl.cnt) > (127+XLEN+1)) then -- 0 + 32 + 1 or 127 + 32 + 1
+            -- HUB --
+            -- Cambiamos bias por 128
+            --if (unsigned(ctrl.cnt) > (127+XLEN+1)) then -- 0 + 32 + 1 or 127 + 32 + 1
+            if (unsigned(ctrl.cnt) > (128+XLEN+1)) then -- 0 + 32 + 1 or 128 + 32 + 1
               ctrl.over <= '1';
               ctrl.state <= S_FINALIZE;
             else
