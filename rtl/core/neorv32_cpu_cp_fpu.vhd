@@ -22,7 +22,6 @@
 -- Licensed under the BSD-3-Clause license, see LICENSE for details.                --
 -- SPDX-License-Identifier: BSD-3-Clause                                            --
 -- ================================================================================ --
-
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -33,7 +32,9 @@ use neorv32.neorv32_package.all;
 entity neorv32_cpu_cp_fpu is
   generic (
     -- FPU-specific options --
-    FPU_SUBNORMAL_SUPPORT : boolean := false -- Implemented sub-normal support, default false
+    FPU_SUBNORMAL_SUPPORT : boolean := false; -- Implemented sub-normal support, default false
+    FP_BIAS               : natural := 128;
+    ILSB                  : natural := 1
   );
   port (
     -- global control --
@@ -59,14 +60,16 @@ end neorv32_cpu_cp_fpu;
 architecture neorv32_cpu_cp_fpu_rtl of neorv32_cpu_cp_fpu is
 
   -- FPU core functions --
-  constant op_class_c  : std_ulogic_vector(2 downto 0) := "000";
-  constant op_comp_c   : std_ulogic_vector(2 downto 0) := "001";
-  constant op_i2f_c    : std_ulogic_vector(2 downto 0) := "010";
-  constant op_f2i_c    : std_ulogic_vector(2 downto 0) := "011";
-  constant op_sgnj_c   : std_ulogic_vector(2 downto 0) := "100";
-  constant op_minmax_c : std_ulogic_vector(2 downto 0) := "101";
-  constant op_addsub_c : std_ulogic_vector(2 downto 0) := "110";
-  constant op_mul_c    : std_ulogic_vector(2 downto 0) := "111";
+  constant op_class_c     : std_ulogic_vector(2 downto 0)       := "000";
+  constant op_comp_c      : std_ulogic_vector(2 downto 0)       := "001";
+  constant op_i2f_c       : std_ulogic_vector(2 downto 0)       := "010";
+  constant op_f2i_c       : std_ulogic_vector(2 downto 0)       := "011";
+  constant op_sgnj_c      : std_ulogic_vector(2 downto 0)       := "100";
+  constant op_minmax_c    : std_ulogic_vector(2 downto 0)       := "101";
+  constant op_addsub_c    : std_ulogic_vector(2 downto 0)       := "110";
+  constant op_mul_c       : std_ulogic_vector(2 downto 0)       := "111";
+  constant ILSB_ZERO_PAD  : std_ulogic_vector(ILSB-1 downto 0)  := (others => '0');
+  constant ILSB_ONE_PAD   : std_ulogic_vector(ILSB-1 downto 0)  := (others => '1');
 
   -- FPU CSRs --
   signal csr_frm    : std_ulogic_vector(2 downto 0);
@@ -109,7 +112,7 @@ architecture neorv32_cpu_cp_fpu_rtl of neorv32_cpu_cp_fpu is
       funct_i    : in  std_ulogic;
       sign_i     : in  std_ulogic;
       exponent_i : in  std_ulogic_vector(8 downto 0);
-      mantissa_i : in  std_ulogic_vector(47 downto 0);
+      mantissa_i : in  std_ulogic_vector(47 + 2*ILSB downto 0);
       integer_i  : in  std_ulogic_vector(31 downto 0);
       class_i    : in  std_ulogic_vector(9 downto 0);
       flags_i    : in  std_ulogic_vector(4 downto 0);
@@ -191,14 +194,10 @@ architecture neorv32_cpu_cp_fpu_rtl of neorv32_cpu_cp_fpu is
 
   -- multiplier unit --
   type multiplier_t is record
-    -- Implementación del ILSB --
-    -- Modificamos el tamaño de los operandos de 24 bits (1 + 23) a 25 bits (1 + 23 + 1)
-    --opa       : std_ulogic_vector(23 downto 0); -- mantissa A plus hidden one
-    --opb       : std_ulogic_vector(23 downto 0); -- mantissa B plus hidden one
-    opa       : std_ulogic_vector(24 downto 0); -- mantissa A plus hidden one
-    opb       : std_ulogic_vector(24 downto 0); -- mantissa B plus hidden one
+    opa       : std_ulogic_vector(23 + ILSB downto 0); -- mantissa A plus hidden one
+    opb       : std_ulogic_vector(23 + ILSB downto 0); -- mantissa B plus hidden one
     sign      : std_ulogic; -- resulting sign
-    product   : std_ulogic_vector(47 downto 0); -- product
+    product   : std_ulogic_vector(47 + 2*ILSB downto 0); -- product
     exp_sum   : std_ulogic_vector(8 downto 0);  -- incl 1x overflow/underflow bit
     exp_res   : std_ulogic_vector(9 downto 0);  -- resulting exponent incl 2x overflow/underflow bit
     --
@@ -216,23 +215,23 @@ architecture neorv32_cpu_cp_fpu_rtl of neorv32_cpu_cp_fpu is
     -- input comparison --
     exp_comp  : std_ulogic_vector(1 downto 0);  -- equal & less
     small_exp : std_ulogic_vector(7 downto 0);
-    small_man : std_ulogic_vector(23 downto 0); -- mantissa + hidden one
+    small_man : std_ulogic_vector(23 + ILSB downto 0); -- mantissa + hidden one + ILSB
     large_exp : std_ulogic_vector(7 downto 0);
-    large_man : std_ulogic_vector(23 downto 0); -- mantissa + hidden one
+    large_man : std_ulogic_vector(23 + ILSB downto 0); -- mantissa + hidden one + ILSB
     -- smaller mantissa alignment --
-    man_sreg  : std_ulogic_vector(23 downto 0); -- mantissa + hidden one
+    man_sreg  : std_ulogic_vector(23 + ILSB downto 0); -- mantissa + hidden one
     man_g_ext : std_ulogic;
     man_r_ext : std_ulogic;
     man_s_ext : std_ulogic;
     exp_cnt   : std_ulogic_vector(8 downto 0);
     -- adder/subtractor stage --
     man_comp  : std_ulogic;
-    man_s     : std_ulogic_vector(26 downto 0); -- mantissa + hidden one + GRS
-    man_l     : std_ulogic_vector(26 downto 0); -- mantissa + hidden one + GRS
-    add_stage : std_ulogic_vector(27 downto 0); -- adder result incl. overflow
+    man_s     : std_ulogic_vector(26 + ILSB downto 0); -- mantissa + hidden one  + ILSB + GRS
+    man_l     : std_ulogic_vector(26 + ILSB downto 0); -- mantissa + hidden one  + ILSB + GRS
+    add_stage : std_ulogic_vector(27 + ILSB downto 0); -- adder result incl. overflow
     -- result --
     res_sign  : std_ulogic;
-    res_sum   : std_ulogic_vector(27 downto 0); -- mantissa sum (+1 bit) + GRS bits (for rounding)
+    res_sum   : std_ulogic_vector(27 + ILSB downto 0); -- mantissa sum (+1 bit) + ILSB + GRS bits (for rounding)
     res_class : std_ulogic_vector(9 downto 0);
     flags     : std_ulogic_vector(4 downto 0);  -- exception flags
     -- arbitration --
@@ -248,7 +247,7 @@ architecture neorv32_cpu_cp_fpu_rtl of neorv32_cpu_cp_fpu is
     mode      : std_ulogic;
     sign      : std_ulogic;
     xexp      : std_ulogic_vector(8 downto 0);
-    xmantissa : std_ulogic_vector(47 downto 0);
+    xmantissa : std_ulogic_vector(47 + 2*ILSB downto 0);
     result    : std_ulogic_vector(31 downto 0);
     class     : std_ulogic_vector(9 downto 0);
     flags_in  : std_ulogic_vector(4 downto 0);
@@ -340,48 +339,45 @@ begin
   -- -------------------------------------------------------------------------------------------
   op_data(0)(31)           <= rs1_i(31);
   op_data(0)(30 downto 23) <= rs1_i(30 downto 23);
-  op_data(0)(22 downto 0)  <= (others => '0') when (rs1_i(30 downto 23) = "00000000") else rs1_i(22 downto 0); -- flush mantissa to zero if subnormal
+  --op_data(0)(22 downto 0)  <= (others => '0') when (rs1_i(30 downto 23) = "00000000") else rs1_i(22 downto 0); -- flush mantissa to zero if subnormal
+  op_data(0)(22 downto 0) <= rs1_i(22 downto 0);
   op_data(1)(31)           <= rs2_i(31);
   op_data(1)(30 downto 23) <= rs2_i(30 downto 23);
-  op_data(1)(22 downto 0)  <= (others => '0') when (rs2_i(30 downto 23) = "00000000") else rs2_i(22 downto 0); -- flush mantissa to zero if subnormal
+  --op_data(1)(22 downto 0)  <= (others => '0') when (rs2_i(30 downto 23) = "00000000") else rs2_i(22 downto 0); -- flush mantissa to zero if subnormal
+  op_data(1)(22 downto 0) <= rs2_i(22 downto 0);
 
 
   -- Number Classifier ----------------------------------------------------------------------
   -- -------------------------------------------------------------------------------------------
   number_classifier: process(op_data, rs1_i, rs2_i)
-    variable op_m_all_zero_v, op_e_all_zero_v, op_e_all_one_v       : std_ulogic;
-    variable op_is_zero_v, op_is_inf_v, op_is_denorm_v, op_is_nan_v : std_ulogic;
+    variable op_m_all_zero_v, op_m_all_one_v, op_e_all_zero_v, op_e_all_one_v : std_ulogic;
+    variable op_is_zero_v,    op_is_inf_v                     : std_ulogic;
   begin
     for i in 0 to 1 loop -- for rs1 and rs2 inputs
       -- check for all-zero/all-one --
       op_m_all_zero_v := not or_reduce_f(op_data(i)(22 downto 0));
+      op_m_all_one_v  :=    and_reduce_f(op_data(i)(22 downto 0));
       op_e_all_zero_v := not or_reduce_f(op_data(i)(30 downto 23));
       op_e_all_one_v  :=    and_reduce_f(op_data(i)(30 downto 23));
 
       -- check special cases --
       op_is_zero_v := op_e_all_zero_v and op_m_all_zero_v;  -- zero
-      op_is_inf_v  := op_e_all_one_v  and op_m_all_zero_v;  -- infinity
-      -- As we are flushing subnormals before classification they will show up as 0.0
-      -- So we check calculate the denorm value is the non-flushed mantissa gated by the op_e_all_zero
-      if (i = 0) then
-        op_is_denorm_v := or_reduce_f(rs1_i(22 downto 0)) and op_e_all_zero_v; -- set the number to subnormal
-      end if;
-      if (i = 1) then
-        op_is_denorm_v := or_reduce_f(rs2_i(22 downto 0)) and op_e_all_zero_v; -- set the number to subnormal
-      end if;
-      op_is_nan_v := op_e_all_one_v and (not op_m_all_zero_v); -- NaN
+      op_is_inf_v  := op_e_all_one_v  and op_m_all_one_v;  -- infinity
 
       -- actual attributes --
       op_class(i)(fp_class_neg_inf_c)    <= op_data(i)(31) and op_is_inf_v; -- negative infinity
-      op_class(i)(fp_class_neg_norm_c)   <= op_data(i)(31) and (not op_is_denorm_v) and (not op_is_nan_v) and (not op_is_inf_v) and (not op_is_zero_v); -- negative normal number
-      op_class(i)(fp_class_neg_denorm_c) <= op_data(i)(31) and op_is_denorm_v; -- negative subnormal number
-      op_class(i)(fp_class_neg_zero_c)   <= op_data(i)(31) and op_is_zero_v and (not op_is_denorm_v); -- negative zero
-      op_class(i)(fp_class_pos_zero_c)   <= (not op_data(i)(31)) and op_is_zero_v and (not op_is_denorm_v); -- positive zero
-      op_class(i)(fp_class_pos_denorm_c) <= (not op_data(i)(31)) and op_is_denorm_v; -- positive subnormal number
-      op_class(i)(fp_class_pos_norm_c)   <= (not op_data(i)(31)) and (not op_is_denorm_v) and (not op_is_nan_v) and (not op_is_inf_v) and (not op_is_zero_v); -- positive normal number
       op_class(i)(fp_class_pos_inf_c)    <= (not op_data(i)(31)) and op_is_inf_v; -- positive infinity
-      op_class(i)(fp_class_snan_c)       <= op_is_nan_v and (not op_data(i)(22)); -- signaling NaN
-      op_class(i)(fp_class_qnan_c)       <= op_is_nan_v and (    op_data(i)(22)); -- quiet NaN
+
+      op_class(i)(fp_class_neg_zero_c)   <= op_data(i)(31) and op_is_zero_v; -- negative zero
+      op_class(i)(fp_class_pos_zero_c)   <= (not op_data(i)(31)) and op_is_zero_v; -- positive zero
+
+      op_class(i)(fp_class_neg_norm_c)   <= op_data(i)(31) and (not op_is_inf_v) and (not op_is_zero_v); -- negative normal number
+      op_class(i)(fp_class_pos_norm_c)   <= (not op_data(i)(31)) and (not op_is_inf_v) and (not op_is_zero_v); -- positive normal number   
+      
+      op_class(i)(fp_class_neg_denorm_c) <= '0';
+      op_class(i)(fp_class_pos_denorm_c) <= '0';
+      op_class(i)(fp_class_snan_c)       <= '0';
+      op_class(i)(fp_class_qnan_c)       <= '0';
     end loop; -- i
   end process number_classifier;
 
@@ -571,13 +567,7 @@ begin
   -- Comparison (FEQ/FLT/FLE) ---------------------------------------------------------------
   -- -------------------------------------------------------------------------------------------
   float_comparison: process(fpu_operands, ctrl_i, comp_equal_ff, comp_less_ff)
-    variable snan_v : std_ulogic; -- at least one input is sNaN
-    variable qnan_v : std_ulogic; -- at least one input is qNaN
   begin
-    -- check for NaN --
-    snan_v := fpu_operands.rs1_class(fp_class_snan_c) or fpu_operands.rs2_class(fp_class_snan_c);
-    qnan_v := fpu_operands.rs1_class(fp_class_qnan_c) or fpu_operands.rs2_class(fp_class_qnan_c);
-
     -- condition evaluation --
     -- assume no exceptions by default
     fu_compare.flags <= (others => '0');
@@ -585,24 +575,11 @@ begin
     fu_compare.result <= (others => '0');
     case ctrl_i.ir_funct3(1 downto 0) is
       when "00" => -- FLE: less than or equal
-        fu_compare.result(0) <= (comp_less_ff or comp_equal_ff) and (not (snan_v or qnan_v)); -- result is zero if either input is NaN
-        -- if one of the operands is unordered (q/sNAN) the compare operation must signal NV per 754.
-        if ((snan_v or qnan_v) = '1') then
-          fu_compare.flags(fp_exc_nv_c) <= '1';
-        end if;
+        fu_compare.result(0) <= (comp_less_ff or comp_equal_ff); -- result is zero if either input is NaN
       when "01" => -- FLT: less than
-        fu_compare.result(0) <= comp_less_ff and (not (snan_v or qnan_v)); -- result is zero if either input is NaN
-        -- if one of the operands is unordered (q/sNAN) the compare operation must signal NV per 754.
-        if ((snan_v or qnan_v) = '1') then
-          fu_compare.flags(fp_exc_nv_c) <= '1';
-        end if;
+        fu_compare.result(0) <= comp_less_ff; -- result is zero if either input is NaN
       when "10" => -- FEQ: equal
-        fu_compare.result(0) <= comp_equal_ff and (not (snan_v or qnan_v)); -- result is zero if either input is NaN
-        -- if one of the operands in the compare operation is a sNAN we must signal NV per 754.
-        -- for equal compares we do not need to consider un-ordred NAN
-        if ((snan_v) = '1') then
-          fu_compare.flags(fp_exc_nv_c) <= '1';
-        end if;
+        fu_compare.result(0) <= comp_equal_ff; -- result is zero if either input is NaN
       when others => -- undefined
         fu_compare.result(0) <= '0';
     end case;
@@ -640,15 +617,11 @@ begin
     end if;
 
     -- number NaN check --
-    cond_v(2) := fpu_operands.rs1_class(fp_class_snan_c) or fpu_operands.rs1_class(fp_class_qnan_c);
-    cond_v(1) := fpu_operands.rs2_class(fp_class_snan_c) or fpu_operands.rs2_class(fp_class_qnan_c);
+    --cond_v(2) := fpu_operands.rs1_class(fp_class_snan_c) or fpu_operands.rs1_class(fp_class_qnan_c);
+    --cond_v(1) := fpu_operands.rs2_class(fp_class_snan_c) or fpu_operands.rs2_class(fp_class_qnan_c);
 
     -- exceptions --
     fu_min_max.flags <= (others => '0'); -- assume no exceptions
-    -- if one of the operands is sNAN) the compare operation must signal NV per 754 2019 chapter 9.6
-    if ((fpu_operands.rs1_class(fp_class_snan_c) or fpu_operands.rs2_class(fp_class_snan_c)) = '1') then
-      fu_min_max.flags(fp_exc_nv_c) <= '1';
-    end if;
 
     -- data output --
     case cond_v is
@@ -656,7 +629,7 @@ begin
       when "001"         => fu_min_max.result <= fpu_operands.rs2;
       when "010" | "011" => fu_min_max.result <= fpu_operands.rs1; -- if one input is NaN output the non-NaN one
       when "100" | "101" => fu_min_max.result <= fpu_operands.rs2; -- if one input is NaN output the non-NaN one
-      when others        => fu_min_max.result <= fp_single_qnan_c; -- output quiet NaN if both inputs are NaN
+      when others        => fu_min_max.result <= fpu_operands.rs1; -- output quiet NaN if both inputs are NaN
     end case;
   end process min_max_select;
 
@@ -747,14 +720,12 @@ begin
     elsif rising_edge(clk_i) then
       multiplier.sign <= fpu_operands.rs1(31) xor fpu_operands.rs2(31); -- resulting sign
       if ((fpu_operands.rs1_class(fp_class_pos_zero_c)   or fpu_operands.rs1_class(fp_class_neg_zero_c)   or
-           fpu_operands.rs2_class(fp_class_pos_zero_c)   or fpu_operands.rs2_class(fp_class_neg_zero_c)   or
-           fpu_operands.rs1_class(fp_class_pos_denorm_c) or fpu_operands.rs1_class(fp_class_neg_denorm_c) or
-           fpu_operands.rs2_class(fp_class_pos_denorm_c) or fpu_operands.rs2_class(fp_class_neg_denorm_c)) = '1') then
+           fpu_operands.rs2_class(fp_class_pos_zero_c)   or fpu_operands.rs2_class(fp_class_neg_zero_c)) = '1') then
         multiplier.exp_res <= (others => '0'); -- if the input to the multiplier is +/- zero or +/- denorm the result will always be +/- zero
       else
+        
         -- Aquí cambiamos el exponente a 128, ya que es el usado en el formato HUB --
-        --multiplier.exp_res <= std_ulogic_vector(unsigned('0' & multiplier.exp_sum) - 127);
-        multiplier.exp_res <= std_ulogic_vector(unsigned('0' & multiplier.exp_sum) - 128);
+        multiplier.exp_res <= std_ulogic_vector(unsigned('0' & multiplier.exp_sum) - FP_BIAS);
       end if;
 
       -- exponent computation --
@@ -766,9 +737,7 @@ begin
       -- Multiplier exception handling
       -- Check that one operand is not inf or NAN before potentially setting OF, UF, and NX flags
       if ((fpu_operands.rs1_class(fp_class_pos_inf_c) or fpu_operands.rs2_class(fp_class_pos_inf_c) or
-           fpu_operands.rs1_class(fp_class_neg_inf_c) or fpu_operands.rs2_class(fp_class_neg_inf_c) or
-           fpu_operands.rs1_class(fp_class_snan_c)    or fpu_operands.rs2_class(fp_class_snan_c)    or
-           fpu_operands.rs1_class(fp_class_qnan_c)    or fpu_operands.rs2_class(fp_class_qnan_c)) = '0') then
+           fpu_operands.rs1_class(fp_class_neg_inf_c) or fpu_operands.rs2_class(fp_class_neg_inf_c)) = '0') then
         if (multiplier.exp_res(multiplier.exp_res'left) = '1') then -- underflow (exp_res is "negative")
           multiplier.flags(fp_exc_of_c) <= '0';
           multiplier.flags(fp_exc_uf_c) <= '1';
@@ -782,25 +751,11 @@ begin
 
       -- invalid operation --
       -- Any multiplication between +/- inf and +/- zero is a not valid operation
-      -- Any multiplication with sNAN is not a valid operation
-      if (not FPU_SUBNORMAL_SUPPORT) then -- if subnormals are flushed to zero we need to treat them as zero for exception handling
-        multiplier.flags(fp_exc_nv_c) <=
-          ((fpu_operands.rs1_class(fp_class_snan_c)       or fpu_operands.rs2_class(fp_class_snan_c))) or -- mul(sNAN, X) or mul(X, sNAN)
-          ((fpu_operands.rs1_class(fp_class_pos_denorm_c) or fpu_operands.rs1_class(fp_class_neg_denorm_c)) and
-           (fpu_operands.rs2_class(fp_class_pos_inf_c)    or fpu_operands.rs2_class(fp_class_neg_inf_c))) or -- mul(+/-denorm, +/-inf)
-          ((fpu_operands.rs1_class(fp_class_pos_inf_c)    or fpu_operands.rs1_class(fp_class_neg_inf_c)) and
-           (fpu_operands.rs2_class(fp_class_pos_denorm_c) or fpu_operands.rs2_class(fp_class_neg_denorm_c))) or -- mul(+/-inf, +/-denorm)
-          ((fpu_operands.rs1_class(fp_class_pos_zero_c)   or fpu_operands.rs1_class(fp_class_neg_zero_c)) and
-           (fpu_operands.rs2_class(fp_class_pos_inf_c)    or fpu_operands.rs2_class(fp_class_neg_inf_c))) or -- mul(+/-zero, +/-inf)
-          ((fpu_operands.rs1_class(fp_class_pos_inf_c)    or fpu_operands.rs1_class(fp_class_neg_inf_c)) and
-           (fpu_operands.rs2_class(fp_class_pos_zero_c)   or fpu_operands.rs2_class(fp_class_neg_zero_c))); -- mul(+/-inf, +/-zero)
-      else
-        multiplier.flags(fp_exc_nv_c) <=
-          ((fpu_operands.rs1_class(fp_class_pos_zero_c) or fpu_operands.rs1_class(fp_class_neg_zero_c)) and
-           (fpu_operands.rs2_class(fp_class_pos_inf_c)  or fpu_operands.rs2_class(fp_class_neg_inf_c))) or -- mul(+/-zero, +/-inf)
-          ((fpu_operands.rs1_class(fp_class_pos_inf_c)  or fpu_operands.rs1_class(fp_class_neg_inf_c)) and
-           (fpu_operands.rs2_class(fp_class_pos_zero_c) or fpu_operands.rs2_class(fp_class_neg_zero_c))); -- mul(+/-inf, +/-zero)
-      end if;
+      multiplier.flags(fp_exc_nv_c) <=
+        ((fpu_operands.rs1_class(fp_class_pos_zero_c) or fpu_operands.rs1_class(fp_class_neg_zero_c))  and
+         (fpu_operands.rs2_class(fp_class_pos_inf_c)  or fpu_operands.rs2_class(fp_class_neg_inf_c) )) or
+        ((fpu_operands.rs1_class(fp_class_pos_inf_c)  or fpu_operands.rs1_class(fp_class_neg_inf_c) )  and
+         (fpu_operands.rs2_class(fp_class_pos_zero_c) or fpu_operands.rs2_class(fp_class_neg_zero_c)));
 
       -- unused exception flags --
       multiplier.flags(fp_exc_dz_c) <= '0'; -- division by zero: not possible here
@@ -813,9 +768,7 @@ begin
   -- integer multiplier (unsigned only) --
   multiplier_core_inst: entity neorv32.neorv32_prim_mul
   generic map (
-    -- Sumamos un bit más al ancho para incluir el ILSB
-    --DWIDTH => 24
-    DWIDTH => 25
+    DWIDTH => 24 + ILSB
   )
   port map (
     -- global control --
@@ -829,11 +782,11 @@ begin
     opb_sn_i => '0',
     res_o    => multiplier.product
   );
-  -- Aquí añadimos el ILSB a los operandos --
-  --multiplier.opa <= '1' & fpu_operands.rs1(22 downto 0); -- append hidden one to mantissa
-  --multiplier.opb <= '1' & fpu_operands.rs2(22 downto 0); -- append hidden one to mantissa
-  multiplier.opa <= '1' & fpu_operands.rs1(22 downto 0) & 1; -- append hidden one to mantissa
-  multiplier.opb <= '1' & fpu_operands.rs2(22 downto 0) & 1; -- append hidden one to mantissa
+
+  multiplier.opa <= '1' & fpu_operands.rs1(22 downto 0) & ILSB_ZERO_PAD when fpu_operands.rs1 = x"40000000" or fpu_operands.rs1 = x"C0000000" else
+                    '1' & fpu_operands.rs1(22 downto 0) & ILSB_ONE_PAD;-- append hidden one to mantissa
+  multiplier.opb <= '1' & fpu_operands.rs2(22 downto 0) & ILSB_ZERO_PAD when fpu_operands.rs2 = x"40000000" or fpu_operands.rs2 = x"C0000000" else
+                    '1' & fpu_operands.rs2(22 downto 0) & ILSB_ONE_PAD; -- append hidden one to mantissa
 
   -- exponent sum --
   multiplier.exp_sum <= std_ulogic_vector(unsigned('0' & fpu_operands.rs1(30 downto 23)) + unsigned('0' & fpu_operands.rs2(30 downto 23)));
@@ -847,10 +800,8 @@ begin
   -- result class --
   multiplier_class_core: process(rstn_i, clk_i)
     variable a_pos_norm_v, a_neg_norm_v, b_pos_norm_v, b_neg_norm_v : std_ulogic;
-    variable a_pos_subn_v, a_neg_subn_v, b_pos_subn_v, b_neg_subn_v : std_ulogic;
     variable a_pos_zero_v, a_neg_zero_v, b_pos_zero_v, b_neg_zero_v : std_ulogic;
     variable a_pos_inf_v,  a_neg_inf_v,  b_pos_inf_v,  b_neg_inf_v  : std_ulogic;
-    variable a_snan_v,     a_qnan_v,     b_snan_v,     b_qnan_v     : std_ulogic;
   begin
     if (rstn_i = '0') then
       multiplier.res_class <= (others => '0');
@@ -860,10 +811,6 @@ begin
       b_pos_norm_v := fpu_operands.rs2_class(fp_class_pos_norm_c);
       a_neg_norm_v := fpu_operands.rs1_class(fp_class_neg_norm_c);
       b_neg_norm_v := fpu_operands.rs2_class(fp_class_neg_norm_c);
-      a_pos_subn_v := fpu_operands.rs1_class(fp_class_pos_denorm_c);
-      b_pos_subn_v := fpu_operands.rs2_class(fp_class_pos_denorm_c);
-      a_neg_subn_v := fpu_operands.rs1_class(fp_class_neg_denorm_c);
-      b_neg_subn_v := fpu_operands.rs2_class(fp_class_neg_denorm_c);
       a_pos_zero_v := fpu_operands.rs1_class(fp_class_pos_zero_c);
       b_pos_zero_v := fpu_operands.rs2_class(fp_class_pos_zero_c);
       a_neg_zero_v := fpu_operands.rs1_class(fp_class_neg_zero_c);
@@ -872,10 +819,6 @@ begin
       b_pos_inf_v  := fpu_operands.rs2_class(fp_class_pos_inf_c);
       a_neg_inf_v  := fpu_operands.rs1_class(fp_class_neg_inf_c);
       b_neg_inf_v  := fpu_operands.rs2_class(fp_class_neg_inf_c);
-      a_snan_v     := fpu_operands.rs1_class(fp_class_snan_c);
-      b_snan_v     := fpu_operands.rs2_class(fp_class_snan_c);
-      a_qnan_v     := fpu_operands.rs1_class(fp_class_qnan_c);
-      b_qnan_v     := fpu_operands.rs2_class(fp_class_qnan_c);
 
       -- +normal --
       multiplier.res_class(fp_class_pos_norm_c) <=
@@ -887,130 +830,40 @@ begin
         (a_neg_norm_v and b_pos_norm_v);   -- -norm * +norm
 
       -- +infinity --
-      if (not FPU_SUBNORMAL_SUPPORT) then -- if we flush denorms to zero then we meed tp remove denorms from the list
-        multiplier.res_class(fp_class_pos_inf_c) <=
-          (a_pos_inf_v  and b_pos_inf_v)  or -- +inf    * +inf
-          (a_neg_inf_v  and b_neg_inf_v)  or -- -inf    * -inf
-          (a_pos_norm_v and b_pos_inf_v)  or -- +norm   * +inf
-          (a_pos_inf_v  and b_pos_norm_v) or -- +inf    * +norm
-          (a_neg_norm_v and b_neg_inf_v)  or -- -norm   * -inf
-          (a_neg_inf_v  and b_neg_norm_v);   -- -inf    * -norm
-      else
-        multiplier.res_class(fp_class_pos_inf_c) <=
-          (a_pos_inf_v  and b_pos_inf_v)  or -- +inf    * +inf
-          (a_neg_inf_v  and b_neg_inf_v)  or -- -inf    * -inf
-          (a_pos_norm_v and b_pos_inf_v)  or -- +norm   * +inf
-          (a_pos_inf_v  and b_pos_norm_v) or -- +inf    * +norm
-          (a_neg_norm_v and b_neg_inf_v)  or -- -norm   * -inf
-          (a_neg_inf_v  and b_neg_norm_v) or -- -inf    * -norm
-          (a_neg_subn_v and b_neg_inf_v)  or -- -denorm * -inf
-          (a_neg_inf_v  and b_neg_subn_v);   -- -inf    * -denorm
-      end if;
+      multiplier.res_class(fp_class_pos_inf_c) <=
+        (a_pos_inf_v  and b_pos_inf_v)  or -- +inf    * +inf
+        (a_neg_inf_v  and b_neg_inf_v)  or -- -inf    * -inf
+        (a_pos_norm_v and b_pos_inf_v)  or -- +norm   * +inf
+        (a_pos_inf_v  and b_pos_norm_v) or -- +inf    * +norm
+        (a_neg_norm_v and b_neg_inf_v)  or -- -norm   * -inf
+        (a_neg_inf_v  and b_neg_norm_v);   -- -inf    * -norm
+
       -- -infinity --
-      if (not FPU_SUBNORMAL_SUPPORT) then -- if we flush denorms to zero then we meed tp remove denorms from the list
-        multiplier.res_class(fp_class_neg_inf_c) <=
-          (a_pos_inf_v  and b_neg_inf_v)  or -- +inf    * -inf
-          (a_neg_inf_v  and b_pos_inf_v)  or -- -inf    * +inf
-          (a_pos_norm_v and b_neg_inf_v)  or -- +norm   * -inf
-          (a_neg_inf_v  and b_pos_norm_v) or -- -inf    * +norm
-          (a_neg_norm_v and b_pos_inf_v)  or -- -norm   * +inf
-          (a_pos_inf_v  and b_neg_norm_v);   -- +inf    * -norm
-      else
-        multiplier.res_class(fp_class_neg_inf_c) <=
-          (a_pos_inf_v  and b_neg_inf_v)  or -- +inf    * -inf
-          (a_neg_inf_v  and b_pos_inf_v)  or -- -inf    * +inf
-          (a_pos_norm_v and b_neg_inf_v)  or -- +norm   * -inf
-          (a_neg_inf_v  and b_pos_norm_v) or -- -inf    * +norm
-          (a_neg_norm_v and b_pos_inf_v)  or -- -norm   * +inf
-          (a_pos_inf_v  and b_neg_norm_v) or -- +inf    * -norm
-          (a_pos_subn_v and b_neg_inf_v)  or -- +denorm * -inf
-          (a_neg_inf_v  and b_pos_subn_v) or -- -inf    * +de-norm
-          (a_neg_subn_v and b_pos_inf_v)  or -- -denorm * +inf
-          (a_pos_inf_v  and b_neg_subn_v);   -- +inf    * -de-norm
-      end if;
+      multiplier.res_class(fp_class_neg_inf_c) <=
+        (a_pos_inf_v  and b_neg_inf_v)  or -- +inf    * -inf
+        (a_neg_inf_v  and b_pos_inf_v)  or -- -inf    * +inf
+        (a_pos_norm_v and b_neg_inf_v)  or -- +norm   * -inf
+        (a_neg_inf_v  and b_pos_norm_v) or -- -inf    * +norm
+        (a_neg_norm_v and b_pos_inf_v)  or -- -norm   * +inf
+        (a_pos_inf_v  and b_neg_norm_v);   -- +inf    * -norm
 
       -- +zero --
-      if (not FPU_SUBNORMAL_SUPPORT) then -- if we flush denorms to zero then
-        multiplier.res_class(fp_class_pos_zero_c) <=
-          (a_pos_zero_v and b_pos_zero_v) or -- +zero   * +zero
-          (a_pos_zero_v and b_pos_norm_v) or -- +zero   * +norm
-          (a_pos_subn_v and b_pos_norm_v) or -- +denorm * +norm
-          (a_pos_zero_v and b_pos_subn_v) or -- +zero   * +denorm
-          (a_neg_zero_v and b_neg_zero_v) or -- -zero   * -zero
-          (a_neg_zero_v and b_neg_norm_v) or -- -zero   * -norm
-          (a_neg_subn_v and b_neg_norm_v) or -- -denrom * -norm
-          (a_neg_zero_v and b_neg_subn_v) or -- -zero   * -denorm
-          (a_pos_norm_v and b_pos_zero_v) or -- +norm   * +zero
-          (a_pos_norm_v and b_pos_subn_v) or -- +norm   * +denorm
-          (a_pos_subn_v and b_pos_zero_v) or -- +denorm * +zero
-          (a_neg_norm_v and b_neg_zero_v) or -- -norm   * -zero
-          (a_neg_norm_v and b_neg_subn_v) or -- -norm   * -denorm
-          (a_neg_subn_v and b_neg_zero_v);   -- -denorm * -zero
-      else
-        multiplier.res_class(fp_class_pos_zero_c) <=
-          (a_pos_zero_v and b_pos_zero_v) or -- +zero   * +zero
-          (a_pos_zero_v and b_pos_norm_v) or -- +zero   * +norm
-          (a_pos_zero_v and b_pos_subn_v) or -- +zero   * +denorm
-          (a_neg_zero_v and b_neg_zero_v) or -- -zero   * -zero
-          (a_neg_zero_v and b_neg_norm_v) or -- -zero   * -norm
-          (a_neg_zero_v and b_neg_subn_v) or -- -zero   * -denorm
-          (a_pos_norm_v and b_pos_zero_v) or -- +norm   * +zero
-          (a_pos_subn_v and b_pos_zero_v) or -- +denorm * +zero
-          (a_neg_norm_v and b_neg_zero_v) or -- -norm   * -zero
-          (a_neg_subn_v and b_neg_zero_v);   -- -denorm * -zero
-      end if;
+      multiplier.res_class(fp_class_pos_zero_c) <=
+        (a_pos_zero_v and b_pos_zero_v) or -- +zero   * +zero
+        (a_pos_zero_v and b_pos_norm_v) or -- +zero   * +norm
+        (a_neg_zero_v and b_neg_zero_v) or -- -zero   * -zero
+        (a_neg_zero_v and b_neg_norm_v) or -- -zero   * -norm
+        (a_pos_norm_v and b_pos_zero_v) or -- +norm   * +zero
+        (a_neg_norm_v and b_neg_zero_v);  -- -norm   * -zero
 
       -- -zero --
-      if (not FPU_SUBNORMAL_SUPPORT) then -- if we flush denorms to zero then
-        multiplier.res_class(fp_class_neg_zero_c) <=
-          (a_pos_zero_v and b_neg_zero_v) or -- +zero   * -zero
-          (a_pos_zero_v and b_neg_norm_v) or -- +zero   * -norm
-          (a_pos_subn_v and b_neg_norm_v) or -- +denom  * -norm
-          (a_pos_zero_v and b_neg_subn_v) or -- +zero   * -denorm
-          (a_neg_zero_v and b_pos_zero_v) or -- -zero   * +zero
-          (a_neg_zero_v and b_pos_norm_v) or -- -zero   * +norm
-          (a_neg_subn_v and b_pos_norm_v) or -- -denorm * +norm
-          (a_neg_zero_v and b_pos_subn_v) or -- -zero   * +denorm
-          (a_neg_norm_v and b_pos_zero_v) or -- -norm   * +zero
-          (a_neg_norm_v and b_pos_subn_v) or -- -norm   * +denorm
-          (a_neg_subn_v and b_pos_zero_v) or -- -denorm * +zero
-          (a_pos_norm_v and b_neg_zero_v) or -- +norm   * -zero
-          (a_pos_norm_v and b_neg_subn_v) or -- +norm   * -denorm
-          (a_pos_subn_v and b_neg_zero_v);   -- +denorm * -zero
-      else
-        multiplier.res_class(fp_class_neg_zero_c) <=
-          (a_pos_zero_v and b_neg_zero_v) or -- +zero   * -zero
-          (a_pos_zero_v and b_neg_norm_v) or -- +zero   * -norm
-          (a_pos_zero_v and b_neg_subn_v) or -- +zero   * -denorm
-          (a_neg_zero_v and b_pos_zero_v) or -- -zero   * +zero
-          (a_neg_zero_v and b_pos_norm_v) or -- -zero   * +norm
-          (a_neg_zero_v and b_pos_subn_v) or -- -zero   * +denorm
-          (a_neg_norm_v and b_pos_zero_v) or -- -norm   * +zero
-          (a_neg_subn_v and b_pos_zero_v) or -- -denorm * +zero
-          (a_pos_norm_v and b_neg_zero_v) or -- +norm   * -zero
-          (a_pos_subn_v and b_neg_zero_v);   -- +denorm * -zero
-      end if;
-
-      -- sNaN --
-      multiplier.res_class(fp_class_snan_c) <= (a_snan_v or b_snan_v); -- any input is sNaN
-      -- qNaN --
-      if (not FPU_SUBNORMAL_SUPPORT) then -- if we flush denorms to zero then
-        multiplier.res_class(fp_class_qnan_c) <=
-          a_snan_v or b_snan_v or a_qnan_v or b_qnan_v or                        -- any input is NaN
-          ((a_pos_inf_v  or a_neg_inf_v)  and (b_pos_zero_v or b_neg_zero_v)) or -- +/-inf * +/-zero
-          ((a_pos_zero_v or a_neg_zero_v) and (b_pos_inf_v  or b_neg_inf_v))  or -- +/-zero * +/-inf
-          ((a_pos_inf_v  or a_neg_inf_v)  and (b_pos_subn_v or b_neg_subn_v)) or -- +/-inf * +/-denorm
-          ((a_pos_subn_v or a_neg_subn_v) and (b_pos_inf_v  or b_neg_inf_v));    -- +/-denorm * +/-inf
-      else
-        multiplier.res_class(fp_class_qnan_c) <=
-          a_snan_v or b_snan_v or a_qnan_v or b_qnan_v or                        -- any input is NaN
-          ((a_pos_inf_v  or a_neg_inf_v)  and (b_pos_zero_v or b_neg_zero_v)) or -- +/-inf * +/-zero
-          ((a_pos_zero_v or a_neg_zero_v) and (b_pos_inf_v  or b_neg_inf_v));    -- +/-zero * +/-inf
-      end if;
-
-      -- subnormal result --
-      multiplier.res_class(fp_class_pos_denorm_c) <= '0'; -- is evaluated by the normalizer
-      multiplier.res_class(fp_class_neg_denorm_c) <= '0'; -- is evaluated by the normalizer
+      multiplier.res_class(fp_class_neg_zero_c) <=
+        (a_pos_zero_v and b_neg_zero_v) or -- +zero   * -zero
+        (a_pos_zero_v and b_neg_norm_v) or -- +zero   * -norm
+        (a_neg_zero_v and b_pos_zero_v) or -- -zero   * +zero
+        (a_neg_zero_v and b_pos_norm_v) or -- -zero   * +norm
+        (a_neg_norm_v and b_pos_zero_v) or -- -norm   * +zero
+        (a_pos_norm_v and b_neg_zero_v); -- +norm   * -zero
     end if;
   end process multiplier_class_core;
 
@@ -1047,6 +900,11 @@ begin
         elsif (addsub.exp_cnt(7 downto 0) = addsub.large_exp) then -- radix point not yet aligned
           addsub.latency(1) <= '0';
           addsub.latency(2) <= addsub.latency(1) and (not addsub.latency(0)); -- "shift done"
+          --if (addsub.latency(1) = '1') then
+          --  addsub.latency(2) <= '1';
+          --else 
+          --  addsub.latency(2) <= '0';
+          --end if;
         end if;
         addsub.latency(3) <= addsub.latency(2); -- adder stage
         addsub.latency(4) <= addsub.latency(3); -- final stage
@@ -1095,7 +953,7 @@ begin
         -- Catch: Set the smaller mantissa to 0 and the s_ext to '1' end go to next step.
         -- Note: The comparison is 24 mantissa bits 1.23 + 3 underflow bits.
         -- The +3 is to account for the grs underflow bits, could be set to +2 as we are always setting s to 1
-        if (unsigned(addsub.large_exp(7 downto 0)) - unsigned(addsub.small_exp(7 downto 0))) > 27 then
+        if (unsigned(addsub.large_exp(7 downto 0)) - unsigned(addsub.small_exp(7 downto 0))) > (27 + ILSB) then
           addsub.man_sreg  <= (others => '0');
           addsub.man_g_ext <= '0';
           addsub.man_r_ext <= '0';
@@ -1216,8 +1074,22 @@ begin
   -- exponent check: find smaller number (magnitude-only) --
   addsub.small_exp <=        fpu_operands.rs1(30 downto 23)  when (addsub.exp_comp(0) = '1') else        fpu_operands.rs2(30 downto 23);
   addsub.large_exp <=        fpu_operands.rs2(30 downto 23)  when (addsub.exp_comp(0) = '1') else        fpu_operands.rs1(30 downto 23);
-  addsub.small_man <= ('1' & fpu_operands.rs1(22 downto 0))  when (addsub.exp_comp(0) = '1') else ('1' & fpu_operands.rs2(22 downto 0));
-  addsub.large_man <= ('1' & fpu_operands.rs2(22 downto 0))  when (addsub.exp_comp(0) = '1') else ('1' & fpu_operands.rs1(22 downto 0));
+  --addsub.small_man <= ('1' & fpu_operands.rs1(22 downto 0)) when (addsub.exp_comp(0) = '1') else ('1' & fpu_operands.rs2(22 downto 0));
+  --addsub.small_man <= ('1' & fpu_operands.rs1(22 downto 0) & ILSB_ZERO_PAD) when (addsub.exp_comp(0) = '1') else 
+  --                    ('1' & fpu_operands.rs2(22 downto 0) & ILSB_ZERO_PAD);
+  
+  addsub.small_man <= ('1' & fpu_operands.rs1(22 downto 0) & ILSB_ZERO_PAD) when (addsub.exp_comp(0) = '1' and (fpu_operands.rs1=x"40000000" or fpu_operands.rs1=x"C0000000")) else
+                      ('1' & fpu_operands.rs1(22 downto 0) & ILSB_ONE_PAD)  when (addsub.exp_comp(0) = '1') else
+                      ('1' & fpu_operands.rs2(22 downto 0) & ILSB_ZERO_PAD) when (addsub.exp_comp(0) = '0' and (fpu_operands.rs2=x"40000000" or fpu_operands.rs2=x"C0000000")) else
+                      ('1' & fpu_operands.rs2(22 downto 0) & ILSB_ONE_PAD);
+  
+                      
+  --addsub.large_man <= ('1' & fpu_operands.rs2(22 downto 0))  when (addsub.exp_comp(0) = '1') else ('1' & fpu_operands.rs1(22 downto 0));
+  addsub.large_man <= ('1' & fpu_operands.rs2(22 downto 0) & ILSB_ZERO_PAD) when (addsub.exp_comp(0) = '1' and (fpu_operands.rs2=x"40000000" or fpu_operands.rs2=x"C0000000")) else 
+                      ('1' & fpu_operands.rs2(22 downto 0) & ILSB_ONE_PAD)  when (addsub.exp_comp(0) = '1') else
+                      ('1' & fpu_operands.rs1(22 downto 0) & ILSB_ZERO_PAD) when (addsub.exp_comp(0) = '0' and (fpu_operands.rs1=x"40000000" or fpu_operands.rs1=x"C0000000")) else
+                      ('1' & fpu_operands.rs1(22 downto 0) & ILSB_ONE_PAD);
+  
 
   -- mantissa check: find smaller number (magnitude-only) --
   addsub.man_s <= (addsub.man_sreg & addsub.man_g_ext & addsub.man_r_ext & addsub.man_s_ext) when (addsub.man_comp = '1') else (addsub.large_man & "000");
@@ -1229,16 +1101,14 @@ begin
   fu_addsub.done <= addsub.done;
 
   -- mantissa result --
-  addsub.res_sum <= addsub.add_stage(27 downto 0);
+  addsub.res_sum <= addsub.add_stage(27 + ILSB downto 0);
 
 
   -- result class --
   adder_subtractor_class_core: process(rstn_i, clk_i)
     variable a_pos_norm_v, a_neg_norm_v, b_pos_norm_v, b_neg_norm_v : std_ulogic;
-    variable a_pos_subn_v, a_neg_subn_v, b_pos_subn_v, b_neg_subn_v : std_ulogic;
     variable a_pos_zero_v, a_neg_zero_v, b_pos_zero_v, b_neg_zero_v : std_ulogic;
     variable a_pos_inf_v,  a_neg_inf_v,  b_pos_inf_v,  b_neg_inf_v  : std_ulogic;
-    variable a_snan_v,     a_qnan_v,     b_snan_v,     b_qnan_v     : std_ulogic;
   begin
     if (rstn_i = '0') then
       addsub.res_class <= (others => '0');
@@ -1249,19 +1119,11 @@ begin
       a_neg_norm_v := fpu_operands.rs1_class(fp_class_neg_norm_c);
       b_neg_norm_v := fpu_operands.rs2_class(fp_class_neg_norm_c);
       if (FPU_SUBNORMAL_SUPPORT) then -- if we don't support subnormals as part of the add/sub circuit
-        a_pos_subn_v := fpu_operands.rs1_class(fp_class_pos_denorm_c);
-        b_pos_subn_v := fpu_operands.rs2_class(fp_class_pos_denorm_c);
-        a_neg_subn_v := fpu_operands.rs1_class(fp_class_neg_denorm_c);
-        b_neg_subn_v := fpu_operands.rs2_class(fp_class_neg_denorm_c);
         a_pos_zero_v := fpu_operands.rs1_class(fp_class_pos_zero_c);
         b_pos_zero_v := fpu_operands.rs2_class(fp_class_pos_zero_c);
         a_neg_zero_v := fpu_operands.rs1_class(fp_class_neg_zero_c);
         b_neg_zero_v := fpu_operands.rs2_class(fp_class_neg_zero_c);
       else
-        a_pos_subn_v := '0';
-        b_pos_subn_v := '0';
-        a_neg_subn_v := '0';
-        b_neg_subn_v := '0';
         a_pos_zero_v := fpu_operands.rs1_class(fp_class_pos_zero_c) or fpu_operands.rs1_class(fp_class_pos_denorm_c);
         b_pos_zero_v := fpu_operands.rs2_class(fp_class_pos_zero_c) or fpu_operands.rs2_class(fp_class_pos_denorm_c);
         a_neg_zero_v := fpu_operands.rs1_class(fp_class_neg_zero_c) or fpu_operands.rs1_class(fp_class_neg_denorm_c);
@@ -1271,10 +1133,6 @@ begin
       b_pos_inf_v := fpu_operands.rs2_class(fp_class_pos_inf_c);
       a_neg_inf_v := fpu_operands.rs1_class(fp_class_neg_inf_c);
       b_neg_inf_v := fpu_operands.rs2_class(fp_class_neg_inf_c);
-      a_snan_v    := fpu_operands.rs1_class(fp_class_snan_c);
-      b_snan_v    := fpu_operands.rs2_class(fp_class_snan_c);
-      a_qnan_v    := fpu_operands.rs1_class(fp_class_qnan_c);
-      b_qnan_v    := fpu_operands.rs2_class(fp_class_qnan_c);
 
       if (ctrl_i.ir_funct12(7) = '0') then -- addition
         -- +infinity --
@@ -1287,13 +1145,10 @@ begin
           --
           (a_pos_inf_v  and b_pos_norm_v) or -- +inf    + +norm
           (a_pos_norm_v and b_pos_inf_v)  or -- +norm   + +inf
-          (a_pos_inf_v  and b_pos_subn_v) or -- +inf    + +denorm
-          (a_pos_subn_v and b_pos_inf_v)  or -- +denorm + +inf
           --
           (a_pos_inf_v  and b_neg_norm_v) or -- +inf    + -norm
-          (a_neg_norm_v and b_pos_inf_v)  or -- -norm   + +inf
-          (a_pos_inf_v  and b_neg_subn_v) or -- +inf    + -denorm
-          (a_neg_subn_v and b_pos_inf_v);    -- -denorm + +inf
+          (a_neg_norm_v and b_pos_inf_v);    -- -norm   + +inf
+
         -- -infinity --
         addsub.res_class(fp_class_neg_inf_c) <=
           (a_neg_inf_v  and b_neg_inf_v)  or -- -inf    + -inf
@@ -1305,12 +1160,7 @@ begin
           (a_neg_inf_v  and b_pos_norm_v) or -- -inf    + +norm
           (a_pos_norm_v and b_neg_inf_v)  or -- +norm   + -inf
           (a_neg_inf_v  and b_neg_norm_v) or -- -inf    + -norm
-          (a_neg_norm_v and b_neg_inf_v)  or -- -norm   + -inf
-          --
-          (a_neg_inf_v  and b_pos_subn_v) or -- -inf    + +denorm
-          (a_pos_subn_v and b_neg_inf_v)  or -- +denorm + -inf
-          (a_neg_inf_v  and b_neg_subn_v) or -- -inf    + -denorm
-          (a_neg_subn_v and b_neg_inf_v);    -- -denorm + -inf
+          (a_neg_norm_v and b_neg_inf_v); -- -norm   + -inf
 
         -- +zero --
         addsub.res_class(fp_class_pos_zero_c) <=
@@ -1321,13 +1171,6 @@ begin
         addsub.res_class(fp_class_neg_zero_c) <=
           (a_neg_zero_v and b_neg_zero_v);   -- -zero + -zero
 
-        -- qNaN --
-        addsub.res_class(fp_class_qnan_c) <=
-          (a_snan_v    or  b_snan_v)    or -- any input is sNaN
-          (a_qnan_v    or  b_qnan_v)    or -- any input is qNaN
-          (a_pos_inf_v and b_neg_inf_v) or -- +inf + -inf
-          (a_neg_inf_v and b_pos_inf_v);   -- -inf + +inf
-
       else -- subtraction
         -- +infinity --
         addsub.res_class(fp_class_pos_inf_c) <=
@@ -1335,34 +1178,26 @@ begin
           (a_pos_inf_v  and b_pos_zero_v) or -- +inf    - +zero
           (a_pos_inf_v  and b_neg_zero_v) or -- +inf    - -zero
           (a_pos_inf_v  and b_pos_norm_v) or -- +inf    - +norm
-          (a_pos_inf_v  and b_pos_subn_v) or -- +inf    - +denorm
           (a_pos_inf_v  and b_neg_norm_v) or -- +inf    - -norm
-          (a_pos_inf_v  and b_neg_subn_v) or -- +inf    - -denorm
           --
           (a_pos_zero_v and b_neg_inf_v)  or -- +zero   - -inf
           (a_neg_zero_v and b_neg_inf_v)  or -- -zero   - -inf
           --
           (a_pos_norm_v and b_neg_inf_v)  or -- +norm   - -inf
-          (a_pos_subn_v and b_neg_inf_v)  or -- +denorm - -inf
-          (a_neg_norm_v and b_neg_inf_v)  or -- -norm   - -inf
-          (a_neg_subn_v and b_neg_inf_v);    -- -denorm - -inf
+          (a_neg_norm_v and b_neg_inf_v);    -- -norm   - -inf
         -- -infinity --
         addsub.res_class(fp_class_neg_inf_c) <=
           (a_neg_inf_v  and b_pos_inf_v)  or -- -inf    - +inf
           (a_neg_inf_v  and b_pos_zero_v) or -- -inf    - +zero
           (a_neg_inf_v  and b_neg_zero_v) or -- -inf    - -zero
           (a_neg_inf_v  and b_pos_norm_v) or -- -inf    - +norm
-          (a_neg_inf_v  and b_pos_subn_v) or -- -inf    - +denorm
           (a_neg_inf_v  and b_neg_norm_v) or -- -inf    - -norm
-          (a_neg_inf_v  and b_neg_subn_v) or -- -inf    - -denorm
           --
           (a_pos_zero_v and b_pos_inf_v)  or -- +zero   - +inf
           (a_neg_zero_v and b_pos_inf_v)  or -- -zero   - +inf
           --
           (a_pos_norm_v and b_pos_inf_v)  or -- +norm   - +inf
-          (a_pos_subn_v and b_pos_inf_v)  or -- +denorm - +inf
-          (a_neg_norm_v and b_pos_inf_v)  or -- -norm   - +inf
-          (a_neg_subn_v and b_pos_inf_v);    -- -denorm - +inf
+          (a_neg_norm_v and b_pos_inf_v);    -- -norm   - +inf
 
         -- +zero --
         addsub.res_class(fp_class_pos_zero_c) <=
@@ -1372,25 +1207,11 @@ begin
         -- -zero --
         addsub.res_class(fp_class_neg_zero_c) <=
           (a_neg_zero_v and b_pos_zero_v);   -- -zero - +zero
-
-        -- qNaN --
-        addsub.res_class(fp_class_qnan_c) <=
-          (a_snan_v    or  b_snan_v)    or -- any input is sNaN
-          (a_qnan_v    or  b_qnan_v)    or -- any input is qNaN
-          (a_pos_inf_v and b_pos_inf_v) or -- +inf - +inf
-          (a_neg_inf_v and b_neg_inf_v);   -- -inf - -inf
       end if;
 
       -- normal --
       addsub.res_class(fp_class_pos_norm_c) <= (a_pos_norm_v or a_neg_norm_v) and (b_pos_norm_v or b_neg_norm_v); -- +/-norm +/- +-/norm [sign is irrelevant here]
       addsub.res_class(fp_class_neg_norm_c) <= (a_pos_norm_v or a_neg_norm_v) and (b_pos_norm_v or b_neg_norm_v); -- +/-norm +/- +-/norm [sign is irrelevant here]
-
-      -- sNaN --
-      addsub.res_class(fp_class_snan_c) <= (a_snan_v or b_snan_v); -- any input is sNaN
-
-      -- subnormal result --
-      addsub.res_class(fp_class_pos_denorm_c) <= '0'; -- is evaluated by the normalizer
-      addsub.res_class(fp_class_neg_denorm_c) <= '0'; -- is evaluated by the normalizer
     end if;
   end process adder_subtractor_class_core;
 
@@ -1406,13 +1227,14 @@ begin
   -- Normalizer Input -----------------------------------------------------------------------
   -- -------------------------------------------------------------------------------------------
   normalizer_input_select: process(funct_ff, addsub, multiplier, fu_conv_i2f)
+      constant PADDING_ZEROS : std_ulogic_vector(19 + ILSB downto 0) := (others => '0');
   begin
     case funct_ff is
       when op_addsub_c => -- addition/subtraction
         normalizer.mode      <= '0'; -- normalization
         normalizer.sign      <= addsub.res_sign;
         normalizer.xexp      <= addsub.exp_cnt;
-        normalizer.xmantissa <= addsub.res_sum(27 downto 1) & x"00000" & addsub.res_sum(0);
+        normalizer.xmantissa <= addsub.res_sum(27 + ILSB downto 1) & PADDING_ZEROS & addsub.res_sum(0);
         normalizer.class     <= addsub.res_class;
         normalizer.flags_in  <= addsub.flags;
         normalizer.start     <= addsub.done;
@@ -1533,7 +1355,8 @@ use neorv32.neorv32_package.all;
 
 entity neorv32_cpu_cp_fpu_normalizer is
   generic (
-    FPU_SUBNORMAL_SUPPORT : boolean := false -- implemented sub-normal support, default false
+    FPU_SUBNORMAL_SUPPORT : boolean := false; -- implemented sub-normal support, default false
+    ILSB                  : natural := 1
   );
   port (
     -- control --
@@ -1546,7 +1369,7 @@ entity neorv32_cpu_cp_fpu_normalizer is
     -- input --
     sign_i     : in  std_ulogic;                     -- sign
     exponent_i : in  std_ulogic_vector(8 downto 0);  -- extended exponent
-    mantissa_i : in  std_ulogic_vector(47 downto 0); -- extended mantissa
+    mantissa_i : in  std_ulogic_vector(47 + 2*ILSB downto 0); -- extended mantissa
     integer_i  : in  std_ulogic_vector(31 downto 0); -- integer input
     class_i    : in  std_ulogic_vector(9 downto 0);  -- input number class
     flags_i    : in  std_ulogic_vector(4 downto 0);  -- exception flags input
@@ -1693,18 +1516,19 @@ begin
         when S_PREPARE_NORM => -- prepare "normal" normalization & rounding
         -- ------------------------------------------------------------
           sreg.upper(31 downto 2) <= (others => '0');
-          sreg.upper(1 downto 0)  <= mantissa_i(47 downto 46);
-          sreg.lower <= mantissa_i(45 downto 23);
-          sreg.ext_g <= mantissa_i(22);
-          sreg.ext_r <= mantissa_i(21);
-          if (or_reduce_f(mantissa_i(20 downto 0)) = '1') then
+          -- Hacemos que el índice sea dinámico con el nuevo ILSB
+          sreg.upper(1 downto 0)  <= mantissa_i(47 + 2*ILSB downto 46 + 2*ILSB);
+          sreg.lower <= mantissa_i(45 + 2*ILSB downto 23 + 2*ILSB);
+
+          sreg.ext_g <= mantissa_i(22 + 2*ILSB);
+          sreg.ext_r <= mantissa_i(21 + 2*ILSB);
+          if (or_reduce_f(mantissa_i(20 + 2*ILSB downto 0)) = '1') then
             sreg.ext_s <= '1';
           else
             sreg.ext_s <= '0';
           end if;
           -- check for special cases --
-          if ((ctrl.class(fp_class_snan_c)       or ctrl.class(fp_class_qnan_c)       or -- NaN
-               ctrl.class(fp_class_neg_zero_c)   or ctrl.class(fp_class_pos_zero_c)   or -- zero
+          if ((ctrl.class(fp_class_neg_zero_c)   or ctrl.class(fp_class_pos_zero_c)   or -- zero
                ctrl.class(fp_class_neg_denorm_c) or ctrl.class(fp_class_pos_denorm_c) or -- subnormal
                ctrl.class(fp_class_neg_inf_c)    or ctrl.class(fp_class_pos_inf_c)    or -- infinity
                ctrl.flags(fp_exc_uf_c) or -- underflow
@@ -1716,7 +1540,7 @@ begin
           -- Set ctrl.cnt to 0 to force the resulting exponent to be 0.
           -- Do not change sreg.lower as that is already all 0s.
           -- Do not change sign as that should be the right sign from the add/sub.
-          elsif (unsigned(mantissa_i(47 downto 0)) = 0) then
+          elsif (unsigned(mantissa_i) = 0) then
             ctrl.cnt <= (others => '0');
             ctrl.state <= S_FINALIZE;
           else
@@ -1807,42 +1631,26 @@ begin
         when S_FINALIZE => -- result finalization
         -- ------------------------------------------------------------
           -- generate result word (the ORDER of checks is important here!) --
-          if (ctrl.class(fp_class_snan_c) = '1') or (ctrl.class(fp_class_qnan_c) = '1') then -- sNaN / qNaN
-            ctrl.res_sgn <= fp_single_qnan_c(31);
-            ctrl.res_exp <= fp_single_qnan_c(30 downto 23);
-            ctrl.res_man <= fp_single_qnan_c(22 downto 0);
-          elsif (ctrl.class(fp_class_neg_inf_c) = '1') or (ctrl.class(fp_class_pos_inf_c) = '1') or -- infinity
+          if (ctrl.class(fp_class_neg_inf_c) = '1') or (ctrl.class(fp_class_pos_inf_c) = '1') or -- infinity
                 (ctrl.flags(fp_exc_of_c) = '1') then -- overflow
-            -- if rounding mode is towards 0 we cannot generate an infinity instead we need to generate +MAX
-            if ((rmode_i = "001") and (ctrl.flags(fp_exc_of_c) = '1')) then
-              ctrl.res_exp <= fp_single_pos_max_c(30 downto 23); -- keep original sign
-              ctrl.res_man <= fp_single_pos_max_c(22 downto 0);
-            -- if rounding mode is towards -inf we cannot generate a positive infinity instead we need to generate +MAX
-            elsif ((rmode_i = "010") and (ctrl.flags(fp_exc_of_c) = '1') and (sign_i = '0')) then
-              ctrl.res_exp <= fp_single_pos_max_c(30 downto 23); -- keep original sign
-              ctrl.res_man <= fp_single_pos_max_c(22 downto 0);
-            -- if rounding mode is towards +inf we cannot generate a negative infinity instead we need to generate -MAX
-            elsif ((rmode_i = "011") and (ctrl.flags(fp_exc_of_c) = '1') and (sign_i = '1')) then
-              ctrl.res_exp <= fp_single_neg_max_c(30 downto 23); -- keep original sign
-              ctrl.res_man <= fp_single_neg_max_c(22 downto 0);
-            else
-              ctrl.res_exp <= fp_single_pos_inf_c(30 downto 23); -- keep original sign
-              ctrl.res_man <= fp_single_pos_inf_c(22 downto 0);
-            end if;
+            ctrl.res_exp <= (others => '1');
+            ctrl.res_man <= (others => '1');
+          
           elsif (ctrl.class(fp_class_neg_zero_c) = '1') or (ctrl.class(fp_class_pos_zero_c) = '1') then -- zero
             ctrl.res_sgn <= ctrl.class(fp_class_neg_zero_c);
-            ctrl.res_exp <= fp_single_pos_zero_c(30 downto 23);
-            ctrl.res_man <= fp_single_pos_zero_c(22 downto 0);
-          elsif (ctrl.flags(fp_exc_uf_c) = '1') or -- underflow
-                (sreg.zero = '1') or (ctrl.class(fp_class_neg_denorm_c) = '1') or (ctrl.class(fp_class_pos_denorm_c) = '1') then -- denormalized (flush-to-zero)
-            ctrl.res_exp <= fp_single_pos_zero_c(30 downto 23); -- keep original sign
-            ctrl.res_man <= fp_single_pos_zero_c(22 downto 0);
+            ctrl.res_exp <= (others => '0');
+            ctrl.res_man <= (others => '0');
+
+          elsif (ctrl.flags(fp_exc_uf_c) = '1') or (sreg.zero = '1') then-- underflow
+            ctrl.res_exp <= (others => '0');
+            ctrl.res_man <= (others => '0');
+
           else -- result is fine as it is
             ctrl.res_exp <= ctrl.cnt(7 downto 0);
             ctrl.res_man <= sreg.lower;
           end if;
           -- generate exception flags --
-          ctrl.flags(fp_exc_nv_c) <= ctrl.flags(fp_exc_nv_c) or ctrl.class(fp_class_snan_c); -- invalid if input is SIGNALING NaN
+          ctrl.flags(fp_exc_nv_c) <= ctrl.flags(fp_exc_nv_c); -- invalid if input is SIGNALING NaN
           ctrl.flags(fp_exc_nx_c) <= ctrl.flags(fp_exc_nx_c) or ctrl.rounded; -- inexact if result is rounded
           -- processing done --
           done_o     <= '1';
@@ -1888,44 +1696,45 @@ begin
     round.en  <= '0';
     round.sub <= '0';
     -- rounding mode --
-    case rmode_i(2 downto 0) is
-      when "000" => -- round to nearest, ties to even
-        if (sreg.ext_g = '0') then
-          round.en <= '0'; -- round down (do nothing)
-        else
-          if (sreg.ext_r = '0') and (sreg.ext_s = '0') then -- tie!
-            round.en <= sreg.lower(0); -- round up if LSB of mantissa is set
-          else
-            round.en <= '1'; -- round up
-          end if;
-        end if;
-        round.sub <= '0'; -- increment
-      when "001" => -- round towards zero
-        round.en <= '0'; -- no rounding -> just truncate
-      when "010" => -- round down (towards -infinity)
-        if (sign_i = '0') then -- if the number is positive truncate to round down towards -inf
-          round.en <= '0'; -- truncate
-        else -- if the number is negative and we have a remainder increment to round up towards -inf
-          round.en  <= sreg.ext_g or sreg.ext_r or sreg.ext_s;
-          round.sub <= '0'; -- decrement
-        end if;
-      when "011" => -- round up (towards +infinity)
-        if (sign_i = '1') then -- if the number is negative truncate to round down towards +inf
-          round.en <= '0'; -- truncate
-        else -- if the number is positive and we have a remainder increment to round up towards +inf
-          round.en  <= sreg.ext_g or sreg.ext_r or sreg.ext_s;
-          round.sub <= '0'; -- increment
-        end if;
-      when "100" => -- round to nearest, ties to max magnitude; similar to round to nearest, ties to even. This is basically "classic" round
-        if (sreg.ext_g = '0') then-- if the remainder is <0.5 (g = 0) we truncate
-          round.en <= '0'; -- round down (do nothing)
-        else -- the remaind is >= 0.5 (g = 1) we round up
-          round.en <= '1'; -- round up
-        end if;
-        round.sub <= '0'; -- increment
-      when others => -- undefined
-        round.en <= '0';
-    end case;
+    -- ELIMINAMOS LA SELECCIÓN DEL ROUNDING MODE, PUESTO QUE EN HUB SOLO SE TRUNCA EL ILSB
+    --case rmode_i(2 downto 0) is
+    --  when "000" => -- round to nearest, ties to even
+    --    if (sreg.ext_g = '0') then
+    --      round.en <= '0'; -- round down (do nothing)
+    --    else
+    --      if (sreg.ext_r = '0') and (sreg.ext_s = '0') then -- tie!
+    --        round.en <= sreg.lower(0); -- round up if LSB of mantissa is set
+    --      else
+    --        round.en <= '1'; -- round up
+    --      end if;
+    --    end if;
+    --    round.sub <= '0'; -- increment
+    --  when "001" => -- round towards zero
+    --    round.en <= '0'; -- no rounding -> just truncate
+    --  when "010" => -- round down (towards -infinity)
+    --    if (sign_i = '0') then -- if the number is positive truncate to round down towards -inf
+    --      round.en <= '0'; -- truncate
+    --    else -- if the number is negative and we have a remainder increment to round up towards -inf
+    --      round.en  <= sreg.ext_g or sreg.ext_r or sreg.ext_s;
+    --      round.sub <= '0'; -- decrement
+    --    end if;
+    --  when "011" => -- round up (towards +infinity)
+    --    if (sign_i = '1') then -- if the number is negative truncate to round down towards +inf
+    --      round.en <= '0'; -- truncate
+    --    else -- if the number is positive and we have a remainder increment to round up towards +inf
+    --      round.en  <= sreg.ext_g or sreg.ext_r or sreg.ext_s;
+    --      round.sub <= '0'; -- increment
+    --    end if;
+    --  when "100" => -- round to nearest, ties to max magnitude; similar to round to nearest, ties to even. This is basically "classic" round
+    --    if (sreg.ext_g = '0') then-- if the remainder is <0.5 (g = 0) we truncate
+    --      round.en <= '0'; -- round down (do nothing)
+    --    else -- the remaind is >= 0.5 (g = 1) we round up
+    --      round.en <= '1'; -- round up
+    --    end if;
+    --    round.sub <= '0'; -- increment
+    --  when others => -- undefined
+    --    round.en <= '0';
+    --end case;
   end process rounding_unit_ctrl;
 
 
@@ -1968,7 +1777,9 @@ use neorv32.neorv32_package.all;
 
 entity neorv32_cpu_cp_fpu_f2i is
   generic (
-    FPU_SUBNORMAL_SUPPORT : boolean := false -- Implemented sub-normal support, default false
+    FPU_SUBNORMAL_SUPPORT : boolean := false; -- Implemented sub-normal support, default false
+    FP_BIAS               : natural := 128;
+    ILSB                  : natural := 1
   );
   port (
     -- control --
@@ -2082,17 +1893,17 @@ begin
         when S_PREPARE_F2I => -- prepare float-to-integer conversion
         -- ------------------------------------------------------------
           -- if the exponent is small enough only S will be set, assuming the number is not 0
-          if (unsigned(ctrl.cnt) < 125) then -- less than 0.5
+          if (unsigned(ctrl.cnt) < 126) then -- less than 0.5
             sreg.int    <= (others => '0');
             sreg.mant   <= "001" & sreg.mant(sreg.mant'left downto 3);
             ctrl.under  <= '1'; -- this is an underflow!
             ctrl.cnt    <= (others => '0');
-          elsif (unsigned(ctrl.cnt) = 125) then -- less than 0.5
+          elsif (unsigned(ctrl.cnt) = 126) then -- less than 0.5
             sreg.int    <= (others => '0');
             sreg.mant   <= "01" & sreg.mant(sreg.mant'left downto 2);
             ctrl.under  <= '1'; -- this is an underflow!
             ctrl.cnt    <= (others => '0');
-          elsif (unsigned(ctrl.cnt) = 126) then -- num < 1.0 but num >= 0.5
+          elsif (unsigned(ctrl.cnt) = 127) then -- num < 1.0 but num >= 0.5
             sreg.int    <= (others => '0');
             sreg.mant   <= '1' & sreg.mant(sreg.mant'left downto 1);
             ctrl.under  <= '1'; -- as the number cannot be represented correctly it will be an underflow
@@ -2100,19 +1911,14 @@ begin
           else
             sreg.int    <= (others => '0');
             sreg.int(0) <= '1'; -- hidden one
-            -- Cambiamos bias a 128
-            --ctrl.cnt    <= std_ulogic_vector(unsigned(ctrl.cnt) - 127); -- remove bias to get raw number of left shifts
-            ctrl.cnt    <= std_ulogic_vector(unsigned(ctrl.cnt) - 128); -- remove bias to get raw number of left shifts
+            ctrl.cnt    <= std_ulogic_vector(unsigned(ctrl.cnt) - FP_BIAS); -- remove bias to get raw number of left shifts
           end if;
           -- check terminal cases --
           if ((ctrl.class(fp_class_neg_inf_c)  or ctrl.class(fp_class_pos_inf_c) or
-               ctrl.class(fp_class_neg_zero_c) or ctrl.class(fp_class_pos_zero_c) or
-               ctrl.class(fp_class_snan_c)     or ctrl.class(fp_class_qnan_c)) = '1') then
+               ctrl.class(fp_class_neg_zero_c) or ctrl.class(fp_class_pos_zero_c)) = '1') then
             ctrl.state <= S_FINALIZE;
           -- check for denorm case if we do not support subnormals
-          elsif ((not FPU_SUBNORMAL_SUPPORT) and
-                ((ctrl.class(fp_class_neg_denorm_c) or ctrl.class(fp_class_pos_denorm_c)) = '1')) then
-            ctrl.state <= S_FINALIZE;
+          
           else
             -- Trip: If the float exponent is to large to fit in an integer we are
             -- shifting the float mantissa out of the integer causing an overflow.
@@ -2120,10 +1926,7 @@ begin
             -- Catch: When the exponent is larger than XLEN + 1 set the overflow flag and go to the next stage.
             -- Note: We use 127 as that is an exponent of 0, XLEN for the integer width and + 1 for safety.
             -- In principle the +1 shouldn't be needed.
-            -- HUB --
-            -- Cambiamos bias por 128
-            --if (unsigned(ctrl.cnt) > (127+XLEN+1)) then -- 0 + 32 + 1 or 127 + 32 + 1
-            if (unsigned(ctrl.cnt) > (128+XLEN+1)) then -- 0 + 32 + 1 or 128 + 32 + 1
+            if (unsigned(ctrl.cnt) > (FP_BIAS+XLEN+1)) then -- 0 + 32 + 1 or 127 + 32 + 1
               ctrl.over <= '1';
               ctrl.state <= S_FINALIZE;
             else
@@ -2174,21 +1977,12 @@ begin
         -- the invalid flag is set. Table 15 gives the range of valid inputs for FCVT.int.S and the behavior for
         -- invalid inputs."
           if (ctrl.unsign = '1') then -- unsigned conversion
-            if (ctrl.class(fp_class_snan_c) = '1') or (ctrl.class(fp_class_qnan_c) = '1') or (ctrl.class(fp_class_pos_inf_c) = '1') or -- NaN or +inf
-               ((ctrl.sign = '0') and (ctrl.over = '1')) then -- positive out-of-range
-              ctrl.result <= x"ffffffff";
-              -- As we are saturating the result is also NV but never NX
-              ctrl.flags(fp_exc_nv_c) <= '1';
-              ctrl.flags(fp_exc_nx_c) <= '0';
-            -- split to better handle the subnormal case and infinity case
-            elsif (ctrl.class(fp_class_neg_inf_c) = '1') then -- -inf
+            if (ctrl.class(fp_class_neg_inf_c) = '1') then -- -inf
               ctrl.result <= x"00000000";
               -- As we are saturating the result is also NV but never NX
               ctrl.flags(fp_exc_nv_c) <= '1';
               ctrl.flags(fp_exc_nx_c) <= '0';
             elsif (ctrl.class(fp_class_neg_zero_c) = '1') or (ctrl.class(fp_class_pos_zero_c) = '1') then -- zero
-              ctrl.result <= x"00000000";
-            elsif (not FPU_SUBNORMAL_SUPPORT) and ((ctrl.class(fp_class_neg_denorm_c) = '1') or (ctrl.class(fp_class_pos_denorm_c) = '1')) then -- subnormal
               ctrl.result <= x"00000000";
             elsif (ctrl.under = '1') and (ctrl.result_tmp(0) = '0') then -- +/- underflow
               ctrl.result <= x"00000000";
@@ -2206,13 +2000,7 @@ begin
             end if;
 
           else -- signed conversion
-            if (ctrl.class(fp_class_snan_c) = '1') or (ctrl.class(fp_class_qnan_c) = '1') then -- NaN
-              -- Split up the potential causes for +MAX to better manage flags
-              ctrl.result <= x"7fffffff";
-              -- if NAN the number is not-valid but never inexact
-              ctrl.flags(fp_exc_nv_c) <= '1';
-              ctrl.flags(fp_exc_nx_c) <= '0';
-            elsif (ctrl.class(fp_class_pos_inf_c) = '1') then -- +inf
+            if (ctrl.class(fp_class_pos_inf_c) = '1') then -- +inf
               ctrl.result <= x"7fffffff";
               -- if INF the number is not-valid but never inexact
               ctrl.flags(fp_exc_nv_c) <= '1';
@@ -2290,48 +2078,6 @@ begin
     round.en  <= '0';
     round.sub <= '0';
     -- rounding mode --
-    case rmode_i(2 downto 0) is
-      when "000" => -- round to nearest, ties to even
-        if (sreg.ext_g = '0') then
-          round.en <= '0'; -- round down (do nothing)
-        else
-          if (sreg.ext_r = '0') and (sreg.ext_s = '0') then -- tie!
-            round.en <= sreg.int(0); -- round up if LSB of integer is set
-          else
-            round.en <= '1'; -- round up
-          end if;
-        end if;
-        round.sub <= '0'; -- increment
-      when "001" => -- round towards zero
-        round.en <= '0'; -- no rounding -> just truncate
-      when "010" => -- round down (towards -infinity)
-        -- If the number is positive truncate to round down towards -inf
-        if (sign_i = '0') then
-          round.en <= '0'; -- truncate
-        else -- if the number is negative and we have a remainder increment to round up towards -inf
-          round.en  <= sreg.ext_g or sreg.ext_r or sreg.ext_s;
-          round.sub <= '0'; -- decrement
-        end if;
-      when "011" => -- round up (towards +infinity)
-        -- if the number is negative truncate to round down towards +inf
-        if (sign_i = '1') then
-          round.en <= '0'; -- truncate
-        else -- if the number is positive and we have a remainder increment to round up towards +inf
-          round.en  <= sreg.ext_g or sreg.ext_r or sreg.ext_s;
-          round.sub <= '0'; -- increment
-        end if;
-      when "100" => -- round to nearest, ties to max magnitude
-        -- similar to round to nearest, ties to even. This is basically "classic" round
-        -- if the remainder is <0.5 (g = 0) we truncate
-        if (sreg.ext_g = '0') then
-          round.en <= '0'; -- round down (do nothing)
-        else -- the remainder is >= 0.5 (g = 1) we round up
-          round.en <= '1'; -- round up
-        end if;
-        round.sub <= '0'; -- increment
-      when others => -- undefined
-        round.en <= '0';
-    end case;
   end process rounding_unit_ctrl;
 
   -- increment/decrement --
