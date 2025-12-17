@@ -19,8 +19,8 @@ entity neorv32_test_setup_bootloader is
   generic (
     -- adapt these for your setup --
     CLOCK_FREQUENCY : natural := 100000000; -- clock frequency of clk_i in Hz
-    IMEM_SIZE       : natural := 16*1024;   -- size of processor-internal instruction memory in bytes
-    DMEM_SIZE       : natural := 8*1024     -- size of processor-internal data memory in bytes
+    IMEM_SIZE       : natural := 64*1024;   -- size of processor-internal instruction memory in bytes
+    DMEM_SIZE       : natural := 16*1024     -- size of processor-internal data memory in bytes
   );
   port (
     -- Global control --
@@ -47,7 +47,7 @@ begin
     -- Clocking --
     CLOCK_FREQUENCY  => CLOCK_FREQUENCY,   -- clock frequency of clk_i in Hz
     -- Boot Configuration --
-    BOOT_MODE_SELECT => 0,                 -- boot via internal bootloader
+    BOOT_MODE_SELECT => 2,                 -- boot via internal bootloader
     -- RISC-V CPU Extensions --
     RISCV_ISA_C      => true,              -- implement compressed extension?
     RISCV_ISA_M      => true,              -- implement mul/div extension?
