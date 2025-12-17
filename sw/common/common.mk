@@ -136,6 +136,47 @@ CC_FLAGS += $(USER_FLAGS)
 LD_LIBS   = -lm -lc -lgcc
 LD_LIBS  += $(USER_LIBS)
 
+# GCC Plugin Configuration
+# Detect GCC version
+GCC_FULL_VERSION := $(shell $(CC) -dumpversion)
+GCC_VERSION := $(firstword $(subst ., ,$(GCC_FULL_VERSION)))
+
+$(info Detected GCC version: $(GCC_VERSION))
+
+# Select plugin based on GCC version
+ifeq ($(GCC_VERSION),11)
+    PLUGIN_NAME := fphub-gcc11.so
+else ifeq ($(GCC_VERSION),12)
+    PLUGIN_NAME := fphub-gcc12.so
+else ifeq ($(GCC_VERSION),13)
+    PLUGIN_NAME := fphub-gcc13.so
+else ifeq ($(GCC_VERSION),14)
+    PLUGIN_NAME := fphub-gcc13.so
+else ifeq ($(GCC_VERSION),15)
+    PLUGIN_NAME := fphub-xpack.so
+else
+    $(warning Unknown GCC version $(GCC_VERSION). Plugin disabled.)
+endif
+
+ifneq ($(PLUGIN_NAME),)
+    GCC_PLUGIN_URL ?= https://github.com/HUBformat/FPHUB_GCC_plugin/releases/latest/download/$(PLUGIN_NAME)
+    GCC_PLUGIN_DIR ?= $(NEORV32_HOME)/sw/plugins
+    GCC_PLUGIN ?= $(GCC_PLUGIN_DIR)/$(PLUGIN_NAME)
+
+    # Add plugin to compiler flags
+    CC_FLAGS += -fplugin=$(GCC_PLUGIN)
+
+    # Ensure plugin is downloaded before compilation
+    # We add it as a prerequisite to all object files
+    $(OBJ): $(GCC_PLUGIN)
+
+# Rule to download the plugin
+$(GCC_PLUGIN):
+	@echo "Downloading GCC plugin $(PLUGIN_NAME)..."
+	@mkdir -p $(GCC_PLUGIN_DIR)
+	@curl -L -f -o $@ $(GCC_PLUGIN_URL) || (echo "Error downloading plugin"; rm -f $@; exit 1)
+endif
+
 # Allow users to use tool-specific flags
 # Uses naming from https://www.gnu.org/software/make/manual/html_node/Implicit-Variables.html
 NEO_CFLAGS   = $(CC_FLAGS) $(CFLAGS)
@@ -148,7 +189,6 @@ NEO_ASFLAGS  = $(CC_FLAGS) $(ASFLAGS)
 # -----------------------------------------------------------------------------
 
 .PHONY: check info help elf_info clean clean_all
-.DEFAULT_GOAL := help
 
 elf:     $(APP_ELF)
 asm:     $(APP_ASM)
@@ -431,7 +471,7 @@ help:
 	$(ECHO) "Targets:"
 	$(ECHO) ""
 	$(ECHO) "  help          show this text"
-	$(ECHO) "  check         check toolchain and list supported ISA extensions
+	$(ECHO) "  check         check toolchain and list supported ISA extensions"
 	$(ECHO) "  info          show project/makefile configuration"
 	$(ECHO) "  gdb           start GNU debugging session"
 	$(ECHO) "  asm           compile and generate <$(APP_ASM)> assembly listing file for manual debugging"
