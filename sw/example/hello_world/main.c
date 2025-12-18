@@ -96,36 +96,17 @@ int main() {
 
     // --- DEFINICIÓN DE TESTS (FPHUB - Bias 128) ---
     TestCase tests [] = {
-        // --- Multiplicación ---
-        // 1.0 * 2.0 = 2.0 (Con ruido ILSB=1 estándar HUB)
-        {0x40000000, '*', 0x40800000, 0x40800000},
-        // 1.0 * 1.0 = 1.0 (Limpio ILSB=0 por ser 1.0)
-        {0x40000000, '*', 0x40000000, 0x40000000},
-        
-        // --- Suma ---
-        // 3.0 + 1.5 = 4.5
-        {0x40C00000, '+', 0x40400000, 0x41100000},
-        // 1.5 * 2^-128 + 1.5 * 2^-128 = 3.0 * 2^-128 (Prueba ex-subnormales)
-        {0x00400000, '+', 0x00400000, 0x00C00000},
-        // Infinito + Infinito = Infinito (0x7FFFFFFF)
-        {0x7F800001, '+', 0x7F800001, 0x7FFFFFFF}, // 0x7F800001 es overflow/gran numero -> satura a Inf
-
-        // --- Resta ---
-        // Identidad
-        {0x7F800001, '-', 0x7F800001, 0x00000000},
-
-        // --- Conversiones (NUEVOS) ---
-        // I2F: Entero 1 -> Float 1.0 (0x40000000 en Bias 128)
-        {1,          'f', 0x00000000, 0x40000000},
-        // I2F: Entero -1 -> Float -1.0 (0xC0000000 en Bias 128)
-        {-1,         'f', 0x00000000, 0xC0000000},
-        
-        // F2I: Float 1.0 (0x40000000) -> Entero 1
-        {0x40000000, 'i', 0x00000000, 1},
-        // F2I: Float 1.99.. (0x407FFFFF) -> Entero 1 (Truncamiento)
-        {0x407FFFFF, 'i', 0x00000000, 1},
-        // F2I: Float 0.99.. (0x3FFFFFFF) -> Entero 0 (Truncamiento)
-        {0x3FFFFFFF, 'i', 0x00000000, 0}
+        {{0x40000000}, '*', {0x40800000}, {0x40800000}},
+        {{0x40000000}, '*', {0x40000000}, {0x40000000}},
+        {{0x40C00000}, '+', {0x40400000}, {0x41100000}},
+        {{0x00400000}, '+', {0x00400000}, {0x00C00000}},
+        {{0x7F800001}, '+', {0x7F800001}, {0x7FFFFFFF}}, 
+        {{0x7F800001}, '-', {0x7F800001}, {0x00000000}},
+        {{1},          'f', {0x00000000}, {0x40000000}},
+        {{-1},         'f', {0x00000000}, {0xC0000000}},
+        {{0x40000000}, 'i', {0x00000000}, {1}},
+        {{0x407FFFFF}, 'i', {0x00000000}, {1}},
+        {{0x3FFFFFFF}, 'i', {0x00000000}, {0}}
     };
 
     int num_tests = sizeof(tests) / sizeof(TestCase);

@@ -1,11 +1,19 @@
+
+
 #include <neorv32.h>
+#include <float.h>
 #include "MahonyAHRS.h"
 #include "har.h"
 #include "test_data.h"
 #include <stdio.h>
+#include "neorv32_zfinx_extension_intrinsics.h"
 
 // Define a sample frequency (UCI HAR is 50Hz)
 #define SAMPLE_FREQ 50.0f
+/**@{*/
+/** UART BAUD rate */
+#define BAUD_RATE 19200
+/**@}*/
 
 // Instantiate the Mahony filter
 Mahony filter;
@@ -18,6 +26,8 @@ extern "C" {
 int main(void) {
     // Initialize the NEORV32 Runtime Environment
     neorv32_rte_setup();
+    // setup UART at default baud rate, no interrupts
+    neorv32_uart0_setup(BAUD_RATE, 0);
 
     neorv32_uart0_printf("Mahony AHRS + HAR Demo on NEORV32 (UCI HAR Data)\n");
 

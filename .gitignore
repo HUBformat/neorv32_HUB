@@ -21,6 +21,7 @@ build/
 
 # host executables
 sw/image_gen/image_gen
+sw/plugins
 *.exe
 *.cf
 
@@ -32,3 +33,5 @@ sw/image_gen/image_gen
 # generated documentation stuff
 /docs/doxygen_build/
 /docs/public/
+
+vivado*
