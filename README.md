@@ -7,11 +7,16 @@
 
 This repository contains a research implementation of the **FPHUB Floating-Point Format** integrated into the NEORV32 architecture. This work is part of a research project at the **University of Málaga (UMA)** aimed at exploring simplified floating-point arithmetic units for reduced hardware complexity.
 
-### What is FPHUB?
-FPHUB is a non-standard floating-point format designed to reduce silicon area and latency while maintaining precision for specific workloads. Key differences from IEEE 754 implemented in this core:
-* **Bias 128:** The exponent bias is shifted to 128 (instead of the standard 127).
-* **No Subnormals:** Subnormal numbers are treated as zeros to simplify the datapath.
-* **Simplified Handling:** NaNs and Infinities are handled with simplified rules or treated as saturation points within the normal range.
+## What is FPHUB?
+
+Unlike the IEEE 754 standard, this unit implements the **FPHUBv2** format, which simplifies hardware by redefining the exponent representation and special cases:
+
+* **Bias:** Represented in excess $2^{n_{exp}-1}$ (instead of the standard $2^{n_{exp}-1}-1$).
+* **No Subnormals:** Subnormal numbers are not considered in order to simplify hardware.
+* **Special Cases:** Defined with specific hardware-friendly codes:
+    * **Zero (0):** Exponent and significand fields are "all 0s".
+    * **One (1):** Significand is "all 0s" and the exponent is equal to the bias ($2^{n_{exp}-1}$).
+    * **Infinity ($\infty$):** Exponent and significand fields are "all 1s".
 * **Truncation:** Rounding modes are simplified to truncation (Round towards Zero).
 
 For more information, you can visit our [organization](https://github.com/HUBformat).
@@ -22,10 +27,10 @@ The modifications are concentrated in the Floating-Point Unit (FPU) VHDL source 
 
 ### Implemented Features
 The following operations have been adapted ("hubbed") to the FPHUB format and verified:
-* ✅ **FADD / FSUB:** Single-precision addition and subtraction with Bias 128.
-* ✅ **FMUL:** Multiplication logic adapted for the new exponent range.
-* ✅ **FCVT (I2F / F2I):** Integer-Float conversions adjusted for the new bias and truncation rules.
-* ✅ **FCOMP:** Comparisons (FEQ, FLT, FLE) adapted to the format.
+* **FADD / FSUB:** Single-precision addition and subtraction with Bias 128.
+* **FMUL:** Multiplication logic adapted for the new exponent range.
+* **FCVT (I2F / F2I):** Integer-Float conversions adjusted for the new bias and truncation rules.
+* **FCOMP:** Comparisons (FEQ, FLT, FLE) adapted to the format.
 
 ## Repository Structure
 * `rtl/core/neorv32_cpu_cp_fpu.vhd`: The core FPU logic modified for FPHUB.
