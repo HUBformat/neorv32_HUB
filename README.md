@@ -16,7 +16,7 @@ FPHUB is a non-standard floating-point format designed to reduce silicon area an
 
 ## Modifications & Status
 
-The modifications are concentrated in the Floating-Point Unit (FPU) VHDL source files (`rtl/core/neorv32_cpu_cp_fpu.vhd`).
+The modifications are concentrated in the Floating-Point Unit (FPU) VHDL source files [rtl/core/neorv32_cpu_cp_fpu.vhd](rtl/core/neorv32_cpu_cp_fpu.vhd).
 
 ### Implemented Features
 The following operations have been adapted ("hubbed") to the FPHUB format and verified:
