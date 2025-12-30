@@ -14,6 +14,8 @@ FPHUB is a non-standard floating-point format designed to reduce silicon area an
 * **Simplified Handling:** NaNs and Infinities are handled with simplified rules or treated as saturation points within the normal range.
 * **Truncation:** Rounding modes are simplified to truncation (Round towards Zero).
 
+For more information, you can visit our [organization](https://github.com/HUBformat).
+
 ## Modifications & Status
 
 The modifications are concentrated in the Floating-Point Unit (FPU) VHDL source files [rtl/core/neorv32_cpu_cp_fpu.vhd](rtl/core/neorv32_cpu_cp_fpu.vhd).
